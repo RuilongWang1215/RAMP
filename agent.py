@@ -141,7 +141,6 @@ class PumpCrewManager(Agent):
                         crew['next_path'] = path
                         crew['next_state'] = 'MOVING_TO_WORK'
                         crew['next_edge_progress'] = 0.0
-                        print(f"--> Crew {crew['id']} selected NEW Target: {target}")
 
             # PUMPING -> Full?
             if crew['state'] == 'PUMPING' and crew['load_liters'] >= self.cfg.tank_capacity_liters:
