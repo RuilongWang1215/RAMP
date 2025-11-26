@@ -195,3 +195,35 @@ class CityGraphModel(Model):
     def run(self):
         for _ in range(self.cfg.T_steps):
             self.step()
+
+if __name__ == "__main__":
+    # 1. Create dummy data (since we don't have your shapefile)
+    print("Generating synthetic city data...")
+    df = pd.DataFrame({
+        'id': range(50),
+        'x': np.random.uniform(0, 10, 50), # 10 degrees ~ 1000km (huge, but works for math)
+        'y': np.random.uniform(0, 10, 50) 
+    })
+    # Convert to GeoDataFrame
+    stops_gdf = gpd.GeoDataFrame(
+        df, geometry=gpd.points_from_xy(df.x, df.y)
+    )
+
+    # 2. Instantiate the model
+    print("Initializing Model...")
+    model = CityGraphModel(stops_gdf=stops_gdf)
+
+    # 3. Run the model
+    print(f"Running simulation for {model.cfg.T_steps} steps...")
+    model.run()
+
+    # 4. Extract and view results
+    results = model.datacollector.get_model_vars_dataframe()
+    
+    # Display the final 5 steps
+    print("\nSimulation Results (Last 5 steps):")
+    print(results.tail())
+    
+    # Check if the crew ever fixed the power station
+    downtime = len(results[results['ps_up'] == 0])
+    print(f"\nPower Station was down for {downtime} minutes.")

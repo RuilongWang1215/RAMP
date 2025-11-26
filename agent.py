@@ -12,7 +12,14 @@ from mesa.datacollection import DataCollector
 # Helpers
 # -------------------------
 def flood_speed_factor(depth, d1=0.10, d2=0.40, min_factor=0.25):
-    pass
+    if depth <= d1:
+        return 1.0  # No slowdown below 10cm
+    elif depth >= d2:
+        return min_factor  # Maximum slowdown above 40cm (25% speed)
+    else:
+        # Linear slowdown between 10cm and 40cm
+        # At 25cm depth: 1.0 - 0.75 * (0.15/0.30) = 0.625 (62.5% speed)
+        return 1.0 - (1.0 - min_factor) * ((depth - d1) / (d2 - d1))
 
 def euclid(a, b):
     return math.hypot(a[0]-b[0], a[1]-b[1])
@@ -22,7 +29,8 @@ def euclid(a, b):
 
 class PowerStation(Agent):
     def __init__(self, unique_id, model, node, fail_threshold=0.5, repair_time=30):
-        super().__init__(unique_id, model)
+        self.unique_id = unique_id
+        self.model = model
         self.node = node
         self.up = True
         self.fail_threshold = fail_threshold
@@ -33,7 +41,8 @@ class PowerStation(Agent):
         depth = self.model.node_flood[self.node]
         if self.up and depth >= self.fail_threshold:
             p_fail = min(1.0, 0.15 + 1.1*(depth - self.fail_threshold))
-            if random.random() < p_fail:
+            if self.model.random.random() < p_fail:
+                print(f"!!! POWER STATION FAILED at Step {self.model.t} (Depth: {depth:.2f}m) !!!")
                 self.up = False
                 self._repair_counter = 0
 
@@ -52,7 +61,8 @@ class PowerStation(Agent):
 
 class Pump(Agent):
     def __init__(self, unique_id, model, node, pump_rate=0.02, radius_hops=2):
-        super().__init__(unique_id, model)
+        self.unique_id = unique_id
+        self.model = model
         self.node = node
         self.rate = pump_rate
         self.radius = radius_hops
@@ -72,8 +82,8 @@ class Pump(Agent):
 
 class RepairCrew(Agent):
     def __init__(self, unique_id, model, speed_edges_per_min=0.5):
-        super().__init__(unique_id, model)
-        # On graph: at a node
+        self.unique_id = unique_id
+        self.model = model
         self.node = model.depot_node
         self.speed = speed_edges_per_min  # edges per minute (slowed by flood)
         self.path = []
@@ -123,7 +133,8 @@ class RepairCrew(Agent):
 
 class Bus(Agent):
     def __init__(self, unique_id, model, route_nodes, headway_min=15, base_kmh=25.0):
-        super().__init__(unique_id, model)
+        self.unique_id = unique_id
+        self.model = model
         self.route = route_nodes  # list of node ids (loop)
         self.idx = 0              # current index on route
         self.next_idx = 1
