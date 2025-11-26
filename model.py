@@ -41,18 +41,6 @@ class RandomTwoPhaseScheduler(TwoPhaseScheduler):
             adv = getattr(a, "advance", None)
             if callable(adv):
                 adv()
-@dataclass
-class ModelConfig:
-    step_minutes: int = 1
-    T_steps: int = 6 * 60          # 6 hours at 1-min steps
-    rain_inflow: float = 0.01      # m per min added (tapers)
-    initial_flood: float = 0.20
-    pump_rate: float = 0.02
-    ps_fail_threshold: float = 0.5
-    ps_repair_time: int = 30
-    bus_headway_min: int = 15
-    base_bus_kmh: float = 25.0
-
 
 class CityGraphModel(Model):
     def __init__(self, stops_gdf: gpd.GeoDataFrame, cfg: ModelConfig = ModelConfig(), seed=42):
@@ -60,6 +48,8 @@ class CityGraphModel(Model):
         self.random = random.Random(seed)
         self.cfg = cfg
         self.schedule = TwoPhaseScheduler(self)
+        self.max_mean_flood = 0.0
+        self.total_water_removed = 0.0
 
         # 1) Build graph from stops
         self.G = nx.Graph()
@@ -68,7 +58,7 @@ class CityGraphModel(Model):
             pt = row.geometry
             self.G.add_node(i, x=float(pt.x), y=float(pt.y))
         # add edges: k-NN scaffolding for connectivity (k=2)
-        k = 2
+        k = 4
         coords = np.array([(self.G.nodes[n]["x"], self.G.nodes[n]["y"]) for n in self.G.nodes()])
         for i in range(len(coords)):
             d = np.linalg.norm(coords - coords[i], axis=1)
@@ -88,7 +78,18 @@ class CityGraphModel(Model):
         self.N = len(self.nodes)
 
         # 2) Flood states (per node)
-        self.node_flood = {n: self.cfg.initial_flood for n in self.nodes}
+        self.node_flood = {}
+        for n in self.nodes:
+            # Some nodes are dry, some are severe, some are mild
+            # This variation forces the "Critical" or "Nearest" logic to actually make choices
+            noise = self.random.uniform(-0.1, 0.1) 
+            level = max(0.0, self.cfg.initial_flood + noise)
+
+            # Create a "disaster zone" far from the depot to test them
+            if n > 40: 
+                level += 0.3
+
+            self.node_flood[n] = level
 
         # 3) Choose special nodes (depot / power / pump) — you can set them explicitly
         self.depot_node = self.nodes[0]
@@ -101,8 +102,8 @@ class CityGraphModel(Model):
                                           repair_time=self.cfg.ps_repair_time)
         self.schedule.add(self.power_station)
 
-        self.pump = Pump("PUMP", self, self.pump_node, pump_rate=self.cfg.pump_rate, radius_hops=2)
-        self.schedule.add(self.pump)
+        self.pump_manager = PumpCrewManager("PUMP_MGR", self, self.cfg)
+        self.schedule.add(self.pump_manager)
 
         self.crew = RepairCrew("CREW", self, speed_edges_per_min=0.6)
         self.schedule.add(self.crew)
@@ -134,7 +135,12 @@ class CityGraphModel(Model):
                 "mean_flood": lambda m: float(np.mean(list(m.node_flood.values()))),
                 "ps_up": lambda m: int(m.power_station.up),
                 "service_active": lambda m: sum(1 for b in m.buses if b.active),
-                "mean_bus_delay": lambda m: float(np.mean([b.delay for b in m.buses])) if m.buses else 0.0
+                "mean_bus_delay": lambda m: float(np.mean([b.delay for b in m.buses])) if m.buses else 0.0,
+                "crews_pumping": lambda m: sum(1 for c in m.pump_manager.crews if c['state'] == 'PUMPING'),
+                "crews_moving": lambda m: sum(1 for c in m.pump_manager.crews if 'MOVING' in c['state']),
+                "crews_unloading": lambda m: sum(1 for c in m.pump_manager.crews if c['state'] == 'UNLOADING'),
+                "max_mean_flood": lambda m: m.max_mean_flood,
+                "total_water_removed": lambda m: m.total_water_removed,
             }
         )
 
@@ -188,7 +194,13 @@ class CityGraphModel(Model):
         #     factor = 1.0 / max(0.25, flood_speed_factor(depth))
         #     self.G.edges[u, v]["travel_wt"] = self.G.edges[u, v]["length_m"] * factor
 
+        current_mean = np.mean(list(self.node_flood.values()))
+        if current_mean > self.max_mean_flood:
+            self.max_mean_flood = current_mean
+
         self.schedule.step()
+        tick_pumped = sum(c['pump_amount'] for c in self.pump_manager.crews)
+        self.total_water_removed += tick_pumped
         self.datacollector.collect(self)
         self.t += 1
 
@@ -222,8 +234,11 @@ if __name__ == "__main__":
     
     # Display the final 5 steps
     print("\nSimulation Results (Last 5 steps):")
-    print(results.tail())
-    
-    # Check if the crew ever fixed the power station
-    downtime = len(results[results['ps_up'] == 0])
-    print(f"\nPower Station was down for {downtime} minutes.")
+    cols = ['mean_flood', 'crews_pumping', 'crews_moving', 'crews_unloading', 'total_water_removed']
+    print(results[cols].tail())
+
+    print(f"\nMax Mean Flood Level: {results['max_mean_flood'].max():.4f} m")
+    print(f"Total Water Removed:  {results['total_water_removed'].iloc[-1]:.0f} Liters")
+    print("\n--- Final Crew Status Diagnosis ---")
+    for crew in model.pump_manager.crews:
+        print(f"Crew {crew['id']}: State={crew['state']} | Load={crew['load_liters']:.0f}L | Location={crew['node']} -> Target={crew['target']}")
